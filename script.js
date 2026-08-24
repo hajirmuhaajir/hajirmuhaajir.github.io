@@ -1,6 +1,9 @@
     (function() {
         'use strict';
 
+        // ===== ICONS (rendered from icons.js registry) =====
+        if (typeof renderIcons === 'function') renderIcons();
+
         // ===== I18N =====
         var i18n = {
             id: {
@@ -78,7 +81,12 @@
                 tool4_desc: 'Bandingkan dua teks dan lihat perbedaannya secara langsung.',
                 tool5_desc: 'AI ringan yang membantu kerja jadi lebih cepat tanpa ribet.',
                 tool6_desc: 'Chat AI yang bisa dipakai dengan berbagai provider sesuai kebutuhan.',
-                tool_open: 'Buka Tool',
+                tool_open: 'Buka Tools',
+                tool_docs: 'Cara Penggunaan',
+                docs_loading: 'Memuat dokumentasi...',
+                docs_error: 'Dokumentasi belum tersedia untuk tool ini.',
+                docs_view_repo: 'Lihat Repository',
+                docs_modal_close: 'Tutup',
                 contact_title: 'Yuk Ngobrol atau Kolaborasi',
                 contact_subtitle: 'Punya pertanyaan, ide, atau cuma ingin menyapa? Kirim pesan saja.',
                 form_name: 'Nama',
@@ -176,6 +184,11 @@
                 tool5_desc: 'A lightweight AI tool that helps you work faster without hassle.',
                 tool6_desc: 'An AI chat that can be used with different providers based on your needs.',
                 tool_open: 'Open Tool',
+                tool_docs: 'How to Use',
+                docs_loading: 'Loading documentation...',
+                docs_error: 'Documentation is not available yet for this tool.',
+                docs_view_repo: 'View Repository',
+                docs_modal_close: 'Close',
                 contact_title: "Let's Chat or Collaborate",
                 contact_subtitle: 'Got a question, idea, or just want to say hi? Send a message.',
                 form_name: 'Name',
@@ -224,6 +237,11 @@
             document.querySelectorAll('[data-i18n-placeholder]').forEach(function(el) {
                 var key = el.dataset.i18nPlaceholder;
                 if (tr[key] !== undefined) el.placeholder = tr[key];
+            });
+
+            document.querySelectorAll('[data-i18n-label]').forEach(function(el) {
+                var key = el.dataset.i18nLabel;
+                if (tr[key] !== undefined) el.setAttribute('aria-label', tr[key]);
             });
 
             document.querySelectorAll('.lang-btn').forEach(function(btn) {
@@ -392,29 +410,6 @@
                 header.classList.toggle('scrolled', window.scrollY > 20);
             }, { passive: true });
         }
-
-        // ===== AMBIENT BACKGROUND PARALLAX (very light, respects reduced motion) =====
-        (function() {
-            var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-            var blobs = document.querySelectorAll('.aurora-blob');
-            if (!blobs.length || reduceMotion) return;
-
-            var parallaxTicking = false;
-            function updateParallax() {
-                var y = window.scrollY || document.documentElement.scrollTop;
-                blobs.forEach(function(blob, i) {
-                    var depth = 0.015 + i * 0.008;
-                    blob.style.marginTop = (y * depth * -1) + 'px';
-                });
-                parallaxTicking = false;
-            }
-            window.addEventListener('scroll', function() {
-                if (!parallaxTicking) {
-                    requestAnimationFrame(updateParallax);
-                    parallaxTicking = true;
-                }
-            }, { passive: true });
-        })();
 
         // ===== REVEAL ON SCROLL =====
         if ('IntersectionObserver' in window) {
@@ -773,7 +768,7 @@
                 });
             });
 
-            var magnetTargets = document.querySelectorAll('.btn-primary, .btn-secondary, .tool-open-btn');
+            var magnetTargets = document.querySelectorAll('.btn-primary, .btn-secondary, .tool-open-btn, .tool-docs-btn');
             magnetTargets.forEach(function(btn) {
                 btn.classList.add('magnetic');
                 btn.addEventListener('mousemove', function(e) {
@@ -843,6 +838,150 @@
             });
         });
         setActiveFilter('all');
+
+        // ===== TOOL DOCS MODAL (README viewer) =====
+        var docsOverlay = document.getElementById('docsOverlay');
+        var docsModal = document.getElementById('docsModal');
+        var docsModalTitle = document.getElementById('docsModalTitle');
+        var docsModalBody = document.getElementById('docsModalBody');
+        var docsModalClose = document.getElementById('docsModalClose');
+        var docsModalRepoLink = document.getElementById('docsModalRepoLink');
+        var docsCache = {};
+        var docsLastFocused = null;
+
+        function mdToHtml(md) {
+            // Minimal, dependency-free Markdown -> HTML converter.
+            var escaped = md
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;');
+
+            var lines = escaped.split(/\r?\n/);
+            var html = '';
+            var inCode = false;
+            var inList = false;
+
+            lines.forEach(function(line) {
+                if (/^```/.test(line)) {
+                    if (!inCode) {
+                        html += '<pre><code>';
+                        inCode = true;
+                    } else {
+                        html += '</code></pre>';
+                        inCode = false;
+                    }
+                    return;
+                }
+                if (inCode) {
+                    html += line + '\n';
+                    return;
+                }
+
+                var heading = line.match(/^(#{1,6})\s+(.*)$/);
+                var listItem = line.match(/^[-*]\s+(.*)$/);
+
+                if (heading) {
+                    if (inList) { html += '</ul>'; inList = false; }
+                    var level = heading[1].length;
+                    html += '<h' + level + '>' + inlineMd(heading[2]) + '</h' + level + '>';
+                    return;
+                }
+                if (listItem) {
+                    if (!inList) { html += '<ul>'; inList = true; }
+                    html += '<li>' + inlineMd(listItem[1]) + '</li>';
+                    return;
+                }
+                if (inList) { html += '</ul>'; inList = false; }
+
+                if (line.trim() === '') return;
+                html += '<p>' + inlineMd(line) + '</p>';
+            });
+            if (inList) html += '</ul>';
+            if (inCode) html += '</code></pre>';
+            return html;
+        }
+
+        function inlineMd(text) {
+            return text
+                .replace(/`([^`]+)`/g, '<code>$1</code>')
+                .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+                .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+                .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+        }
+
+        function fetchReadme(repo) {
+            if (docsCache[repo]) return Promise.resolve(docsCache[repo]);
+            var branches = ['main', 'master'];
+            var attempt = function(i) {
+                if (i >= branches.length) return Promise.reject(new Error('not-found'));
+                var url = 'https://raw.githubusercontent.com/haiere/' + repo + '/' + branches[i] + '/README.md';
+                return fetch(url).then(function(res) {
+                    if (!res.ok) return attempt(i + 1);
+                    return res.text();
+                }).catch(function() {
+                    return attempt(i + 1);
+                });
+            };
+            return attempt(0).then(function(text) {
+                docsCache[repo] = text;
+                return text;
+            });
+        }
+
+        function openDocsModal(repo, toolName) {
+            if (!docsModal || !docsOverlay) return;
+            var tr = i18n[currentLang];
+            docsLastFocused = document.activeElement;
+
+            docsModalTitle.textContent = (tr.tool_docs || 'How to Use') + ' — ' + toolName;
+            docsModalBody.innerHTML = '<div class="docs-modal-loading">' + (tr.docs_loading || 'Loading...') + '</div>';
+            docsModalRepoLink.href = 'https://github.com/haiere/' + repo;
+
+            docsOverlay.classList.add('active');
+            docsModal.classList.add('active');
+            docsOverlay.setAttribute('aria-hidden', 'false');
+            docsModal.setAttribute('aria-hidden', 'false');
+            setBodyScrollLock(true);
+            docsModalClose.focus();
+
+            fetchReadme(repo)
+                .then(function(md) {
+                    docsModalBody.innerHTML = '<div class="docs-markdown">' + mdToHtml(md) + '</div>';
+                })
+                .catch(function() {
+                    docsModalBody.innerHTML = '<div class="docs-modal-error">' +
+                        (tr.docs_error || 'Documentation is not available yet for this tool.') + '</div>';
+                });
+        }
+
+        function closeDocsModal() {
+            if (!docsModal || !docsOverlay) return;
+            docsOverlay.classList.remove('active');
+            docsModal.classList.remove('active');
+            docsOverlay.setAttribute('aria-hidden', 'true');
+            docsModal.setAttribute('aria-hidden', 'true');
+            setBodyScrollLock(false);
+            if (docsLastFocused && typeof docsLastFocused.focus === 'function') {
+                docsLastFocused.focus();
+            }
+        }
+
+        document.querySelectorAll('.tool-docs-btn').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                var repo = btn.dataset.repo;
+                var name = btn.dataset.toolName || '';
+                if (!repo) return;
+                openDocsModal(repo, name);
+            });
+        });
+
+        if (docsModalClose) docsModalClose.addEventListener('click', closeDocsModal);
+        if (docsOverlay) docsOverlay.addEventListener('click', closeDocsModal);
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape' && docsModal && docsModal.classList.contains('active')) {
+                closeDocsModal();
+            }
+        });
 
         console.log('Haiere Studio - Cleaned & Optimized');
     })();
